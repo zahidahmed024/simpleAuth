@@ -4,13 +4,17 @@ const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookie = require('cookie');
+const cors = require('cors');
+
 const app = express();
 const port = 3001;
-const cors = require('cors');
+
 app.use(cors({
-    origin: 'http://localhost:3002',
+    origin: 'http://localhost:3000',
     credentials: true
 }));
+
+app.use(bodyParser.json());
 
 // SQLite database initialization
 const db = new sqlite3.Database('./simpleAuth.db', (err) => {
@@ -20,17 +24,23 @@ const db = new sqlite3.Database('./simpleAuth.db', (err) => {
     console.log('Connected to the simpleAuth database.');
 });
 
-//after runing the server for the first time, comment out the following line to avoid creating the table again
+// Uncomment this if running for the first time
 // db.serialize(() => {
-//     db.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password TEXT)");
+//     db.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password TEXT, refreshToken TEXT)");
 // });
 
-app.use(bodyParser.json());
+// 🔹 **Utility functions**
+const generateAccessToken = (user) => {
+    return jwt.sign({ userId: user.id, name: user.name }, 'access_secret_key', { expiresIn: '15m' });
+};
 
-// Register endpoint
+const generateRefreshToken = (user) => {
+    return jwt.sign({ userId: user.id, name: user.name }, 'refresh_secret_key', { expiresIn: '7d' });
+};
+
+// 🔹 **Register Route**
 app.post('/register', (req, res) => {
     const { name, password } = req.body;
-    // console.log(req)
 
     bcrypt.hash(password, 10, (err, hashedPassword) => {
         if (err) {
@@ -46,51 +56,49 @@ app.post('/register', (req, res) => {
     });
 });
 
-// Login endpoint
+// 🔹 **Login Route**
 app.post('/login', (req, res) => {
     const { name, password } = req.body;
-    // console.log(req.body)
-    db.get('SELECT * FROM users WHERE name = ?', [name], (err, row) => {
-        if (err || !row) {
+
+    db.get('SELECT * FROM users WHERE name = ?', [name], (err, user) => {
+        if (err || !user) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        bcrypt.compare(password, row.password, (err, result) => {
+        bcrypt.compare(password, user.password, (err, result) => {
             if (err || !result) {
                 return res.status(401).json({ error: 'Invalid credentials' });
             }
 
-            const token = jwt.sign({ userId: row.id, name: row.name }, 'secret_key', { expiresIn: '1h' });
+            const accessToken = generateAccessToken(user);
+            const refreshToken = generateRefreshToken(user);
 
-            // res.cookie('token', token);
-            res.setHeader(
-                "Set-Cookie",
-                cookie.serialize("session", token || "", {
-                    httpOnly: true,
-                    // secure: false,
-                    maxAge: 60 * 60,
-                    // sameSite: "strict",
-                    path: "/",
-                })
-            )
-            res.status(200).json({ token });
+            // Store refresh token in DB
+            db.run('UPDATE users SET refreshToken = ? WHERE id = ?', [refreshToken, user.id]);
+
+            // Set refresh token as HTTP-only cookie
+            // res.setHeader('Set-Cookie', cookie.serialize('refreshToken', refreshToken, {
+            //     httpOnly: true,
+            //     secure: false, // Change to true in production (HTTPS)
+            //     sameSite: 'strict',
+            //     path: '/'
+            // }));
+
+            res.status(200).json({ accessToken, refreshToken });
         });
     });
 });
 
-// Middleware for JWT validation
+// 🔹 **Middleware for JWT Validation**
 function authenticateToken(req, res, next) {
-    // const authHeader = req.headers['authorization'];
-    const authHeader = req.headers?.cookie;
-    console.log('authHeader', req.headers)
-    // console.log('authHeader', req.cookies?.session)
-    const token = authHeader && authHeader.split('=')[1];
-    console.log('token', JSON.stringify(token))
-    if (token == null) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
         return res.sendStatus(401);
     }
 
-    jwt.verify(token, 'secret_key', (err, user) => {
+    jwt.verify(token, 'access_secret_key', (err, user) => {
         if (err) {
             return res.sendStatus(403);
         }
@@ -99,11 +107,59 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// Sample protected route
+// 🔹 **Refresh Token Route**
+app.post('/refresh', (req, res) => {
+    const cookies = req.headers?.cookie;
+    const refreshToken = cookies && cookies.split('refreshToken=')[1];
+
+    if (!refreshToken) {
+        return res.sendStatus(401);
+    }
+
+    db.get('SELECT * FROM users WHERE refreshToken = ?', [refreshToken], (err, user) => {
+        if (err || !user) {
+            return res.sendStatus(403);
+        }
+
+        jwt.verify(refreshToken, 'refresh_secret_key', (err, decoded) => {
+            if (err) {
+                return res.sendStatus(403);
+            }
+
+            const accessToken = generateAccessToken(user);
+            res.status(200).json({ accessToken });
+        });
+    });
+});
+
+// 🔹 **Logout Route**
+app.post('/logout', (req, res) => {
+    const cookies = req.headers?.cookie;
+    const refreshToken = cookies && cookies.split('refreshToken=')[1];
+
+    if (!refreshToken) {
+        return res.sendStatus(204);
+    }
+
+    // Remove refresh token from DB
+    db.run('UPDATE users SET refreshToken = NULL WHERE refreshToken = ?', [refreshToken], () => {
+        // res.setHeader('Set-Cookie', cookie.serialize('refreshToken', '', {
+        //     httpOnly: true,
+        //     secure: false, // Change to true in production
+        //     sameSite: 'strict',
+        //     path: '/',
+        //     expires: new Date(0) // Expire immediately
+        // }));
+        res.sendStatus(204);
+    });
+});
+
+// 🔹 **Protected Route Example**
 app.get('/protected', authenticateToken, (req, res) => {
     res.status(200).json({ message: 'You are authorized' });
 });
 
+// 🔹 **Start Server**
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
 });
