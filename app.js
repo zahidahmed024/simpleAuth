@@ -58,16 +58,16 @@ app.post('/register', (req, res) => {
 
 // 🔹 **Login Route**
 app.post('/login', (req, res) => {
+    console.log(req.body)
     const { name, password } = req.body;
-
     db.get('SELECT * FROM users WHERE name = ?', [name], (err, user) => {
         if (err || !user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+            return res.status(422).json({ error: 'Invalid credentials' });
         }
 
         bcrypt.compare(password, user.password, (err, result) => {
             if (err || !result) {
-                return res.status(401).json({ error: 'Invalid credentials' });
+                return res.status(422).json({ error: 'Invalid credentials' });
             }
 
             const accessToken = generateAccessToken(user);
