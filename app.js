@@ -31,11 +31,11 @@ const db = new sqlite3.Database('./simpleAuth.db', (err) => {
 
 // 🔹 **Utility functions**
 const generateAccessToken = (user) => {
-    return jwt.sign({ userId: user.id, name: user.name }, 'access_secret_key', { expiresIn: '15m' });
+    return jwt.sign({ userId: user.id, name: user.name }, 'access_secret_key', { expiresIn: '5s' });
 };
 
 const generateRefreshToken = (user) => {
-    return jwt.sign({ userId: user.id, name: user.name }, 'refresh_secret_key', { expiresIn: '7d' });
+    return jwt.sign({ userId: user.id, name: user.name }, 'refresh_secret_key', { expiresIn: '20s' });
 };
 
 // 🔹 **Register Route**
@@ -95,12 +95,12 @@ function authenticateToken(req, res, next) {
     const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
-        return res.sendStatus(401);
+        return res.status(403).json({ error: 'Invalid refresh token' });
     }
 
     jwt.verify(token, 'access_secret_key', (err, user) => {
         if (err) {
-            return res.sendStatus(403);
+            return res.sendStatus(401);
         }
         req.user = user;
         next();
@@ -109,25 +109,30 @@ function authenticateToken(req, res, next) {
 
 // 🔹 **Refresh Token Route**
 app.post('/refresh', (req, res) => {
-    const cookies = req.headers?.cookie;
-    const refreshToken = cookies && cookies.split('refreshToken=')[1];
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
 
-    if (!refreshToken) {
-        return res.sendStatus(401);
+    if (!token) {
+        return res.status(403).json({ error: 'Invalid refresh token' });
     }
 
-    db.get('SELECT * FROM users WHERE refreshToken = ?', [refreshToken], (err, user) => {
+    db.get('SELECT * FROM users WHERE refreshToken = ?', [token], (err, user) => {
         if (err || !user) {
+            console.log('user not found')
             return res.sendStatus(403);
         }
 
-        jwt.verify(refreshToken, 'refresh_secret_key', (err, decoded) => {
+        jwt.verify(token, 'refresh_secret_key', (err, decoded) => {
             if (err) {
+                console.log('cant verify')
                 return res.sendStatus(403);
             }
 
             const accessToken = generateAccessToken(user);
-            res.status(200).json({ accessToken });
+            const refreshToken = generateRefreshToken(user);
+            db.run('UPDATE users SET refreshToken = ? WHERE id = ?', [refreshToken, user.id], () => {
+                res.status(200).json({ accessToken, refreshToken });
+            });
         });
     });
 });
@@ -150,7 +155,7 @@ app.post('/logout', (req, res) => {
         //     path: '/',
         //     expires: new Date(0) // Expire immediately
         // }));
-        res.sendStatus(204);
+        res.sendStatus(200);
     });
 });
 
